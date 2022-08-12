@@ -242,9 +242,9 @@ func (fr FunctionReports) Cost() (cost float64) {
 	if fr.Architecture == "arm64" {
 		gbSecondPrice = 0.0000133334
 	}
-	secs := msBilled / 1000.0
+	secs := msBilled.Seconds()
 	gbs := float64(memorySize) / 1024.0
-	cost = (gbs * secs.Seconds() * gbSecondPrice) + costForRequests
+	cost = (gbs * secs * gbSecondPrice) + costForRequests
 	return
 }
 
