@@ -45,3 +45,16 @@ go install github.com/a-h/lambdacost@latest
 ```
 lambdacost -region=eu-west-1
 ```
+
+## Tasks
+
+### release
+
+Create production build with goreleaser.
+
+```sh
+if [ "${GITHUB_TOKEN}" == "" ]; then echo "No github token, run:"; echo "export GITHUB_TOKEN=`pass github.com/goreleaser_access_token`"; exit 1; fi
+./push-tag.sh
+goreleaser --rm-dist
+```
+
