@@ -113,10 +113,10 @@ func displayReport(reportContent []FunctionReports) {
 		"Daily",
 		"Monthly",
 		"Invocations",
-		"Avg", // Duration
-		"RAM (Max)",
-		"RAM (Assigned)",
-		"RAM (Optimal)",
+		"Avg",             // Duration
+		"RAM",             // Max
+		"RAM",             // Assigned
+		"RAM",             // Optimal)
 		"Monthly Savings", // arm64 + RAM
 	}, "\t"))
 	fmt.Fprintln(tw, strings.Join([]string{
