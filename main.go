@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"sort"
 	"strconv"
 	"strings"
@@ -20,81 +22,35 @@ import (
 	"go.uber.org/zap"
 )
 
+var flagRegion = flag.String("region", "", "The AWS region to query")
+
 func main() {
+	flag.Parse()
 	log, err := zap.NewProduction()
 	if err != nil {
 		panic(fmt.Sprintf("could not create log: %v", err))
 	}
 
-	//TODO: Handle Ctrl-C.
-	ctx := context.Background()
+	// Handle Ctrl-C.
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt)
+	// Create a cancellable context and wire it up to signals from Ctrl-C.
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		<-signals
+		fmt.Println()
+		cancel()
+	}()
 
+	// Set up the AWS SDK.
 	cfg, err := config.LoadDefaultConfig(ctx)
 	if err != nil {
 		log.Fatal("could not load AWS config", zap.Error(err))
 	}
-	log = log.With(zap.String("region", cfg.Region))
-
-	// Run report.
-	if _, err := os.Stat("output.json"); err == nil {
-		input, err := os.Open("output.json")
-		if err != nil {
-			log.Fatal("could not get open output.json", zap.Error(err))
-		}
-		var reportContent []FunctionReports
-		err = json.NewDecoder(input).Decode(&reportContent)
-		if err != nil {
-			log.Fatal("could not get decode output.json", zap.Error(err))
-		}
-		sort.Slice(reportContent, func(i, j int) bool {
-			a := reportContent[i].Cost()
-			b := reportContent[j].Cost()
-			return a > b
-		})
-		tw := tabwriter.NewWriter(os.Stdout, 1, 1, 1, ' ', 0)
-		fmt.Fprintln(tw, strings.Join([]string{
-			"Name",
-			"Arch",
-			"Daily",
-			"Monthly",
-			"Invocations",
-			"Avg Duration",
-			"RAM (Max)",
-			"RAM (Assigned)",
-			"RAM (Optimal)",
-			"Monthly Savings (arm64 + RAM)",
-		}, "\t"))
-		for _, rc := range reportContent {
-			var pcUsed float64
-			if rc.MemoryAssigned() > 0 {
-				pcUsed = (float64(rc.MaxMemoryUsed()) / float64(rc.MemoryAssigned())) * 100.0
-			}
-			cost := rc.Cost()
-			optimisedRAM, optimisedCost := rc.OptimisedCost()
-			optimisedRAMDisplay := fmt.Sprintf("%d", optimisedRAM)
-			if optimisedRAM == 0 {
-				optimisedRAMDisplay = "N/A"
-			}
-			monthlySavings := (cost * 30) - (optimisedCost * 30)
-			if monthlySavings < 0 {
-				monthlySavings = 0.0
-			}
-			fmt.Fprintln(tw, strings.Join([]string{
-				rc.Name,
-				rc.Architecture,
-				fmt.Sprintf("$%.5f", cost),
-				fmt.Sprintf("$%.5f", cost*30),
-				fmt.Sprintf("%d", len(rc.Reports)),
-				fmt.Sprintf("%v", rc.AvgDuration()),
-				fmt.Sprintf("%d (%.2f%%)", rc.MaxMemoryUsed(), pcUsed),
-				fmt.Sprintf("%d", rc.MemoryAssigned()),
-				optimisedRAMDisplay,
-				fmt.Sprintf("$%.2f", monthlySavings),
-			}, "\t"))
-		}
-		tw.Flush()
-		return
+	if flagRegion != nil && *flagRegion != "" {
+		cfg.Region = *flagRegion
 	}
+	log = log.With(zap.String("region", cfg.Region))
 
 	// Find current account.
 	log.Info("Looking up account ID")
@@ -104,6 +60,110 @@ func main() {
 	}
 	log = log.With(zap.String("account", *identity.Account))
 
+	// Create the file name used to store the data.
+	outputFileName := fmt.Sprintf("%s-%s.json", *identity.Account, cfg.Region)
+
+	// Run the report.
+	var functionReports []FunctionReports
+	// If the data doesn't exist on disk, get it and cache it.
+	if _, err := os.Stat(outputFileName); err != nil {
+		log.Info("no existing report data found, downloading logs from AWS")
+		functionReports, err = getFunctionReports(ctx, log, cfg)
+		if err != nil {
+			log.Fatal("failed to get function reports", zap.Error(err))
+		}
+		log.Info("creating report JSON file")
+		f, err := os.Create(outputFileName)
+		if err != nil {
+			log.Fatal("could not create report JSON file", zap.Error(err))
+		}
+		defer f.Close()
+		err = json.NewEncoder(f).Encode(functionReports)
+		if err != nil {
+			log.Fatal("could not export JSON", zap.Error(err))
+		}
+		log.Info("downloading logs complete")
+	} else {
+		log.Info("existing report data found, using it", zap.String("filename", outputFileName))
+		// Now that the data is found, display the results.
+		input, err := os.Open(outputFileName)
+		if err != nil {
+			log.Fatal("could not get open output.json", zap.Error(err))
+		}
+		err = json.NewDecoder(input).Decode(&functionReports)
+		if err != nil {
+			log.Fatal("could not get decode output.json", zap.Error(err))
+		}
+	}
+
+	// Display the results.
+	displayReport(functionReports)
+}
+
+func displayReport(reportContent []FunctionReports) {
+	sort.Slice(reportContent, func(i, j int) bool {
+		a := reportContent[i].Cost()
+		b := reportContent[j].Cost()
+		return a > b
+	})
+	tw := tabwriter.NewWriter(os.Stdout, 1, 1, 1, ' ', 0)
+	fmt.Fprintln(tw, strings.Join([]string{
+		"Name",
+		"Arch",
+		"Daily",
+		"Monthly",
+		"Invocations",
+		"Avg", // Duration
+		"RAM (Max)",
+		"RAM (Assigned)",
+		"RAM (Optimal)",
+		"Monthly Savings", // arm64 + RAM
+	}, "\t"))
+	fmt.Fprintln(tw, strings.Join([]string{
+		"",
+		"",
+		"",
+		"",
+		"",
+		"Duration", // Avg
+		"Max",      // RAM
+		"Assigned", // RAM
+		"Optimal",  // RAM
+		"(arm64 + RAM)",
+	}, "\t"))
+	for _, rc := range reportContent {
+		var pcUsed float64
+		if rc.MemoryAssigned() > 0 {
+			pcUsed = (float64(rc.MaxMemoryUsed()) / float64(rc.MemoryAssigned())) * 100.0
+		}
+		cost := rc.Cost()
+		optimisedRAM, optimisedCost := rc.OptimisedCost()
+		optimisedRAMDisplay := fmt.Sprintf("%d", optimisedRAM)
+		if optimisedRAM == 0 {
+			optimisedRAMDisplay = "N/A"
+		}
+		monthlySavings := (cost * 30) - (optimisedCost * 30)
+		if monthlySavings < 0 {
+			monthlySavings = 0.0
+		}
+		fmt.Fprintln(tw, strings.Join([]string{
+			rc.Name,
+			rc.Architecture,
+			fmt.Sprintf("$%.5f", cost),
+			fmt.Sprintf("$%.5f", cost*30),
+			fmt.Sprintf("%d", len(rc.Reports)),
+			fmt.Sprintf("%v", rc.AvgDuration()),
+			fmt.Sprintf("%d (%.2f%%)", rc.MaxMemoryUsed(), pcUsed),
+			fmt.Sprintf("%d", rc.MemoryAssigned()),
+			optimisedRAMDisplay,
+			fmt.Sprintf("$%.2f", monthlySavings),
+		}, "\t"))
+	}
+	tw.Flush()
+	return
+}
+
+func getFunctionReports(ctx context.Context, log *zap.Logger, cfg aws.Config) (functionReports []FunctionReports, err error) {
 	// Get functions.
 	log.Info("Listing functions")
 	lambdaClient := lambda.NewFromConfig(cfg)
@@ -118,7 +178,7 @@ func main() {
 	cwLogsClient := cloudwatchlogs.NewFromConfig(cfg)
 
 	// Create the function functionReports.
-	functionReports := make([]FunctionReports, len(lambdaFunctions))
+	functionReports = make([]FunctionReports, len(lambdaFunctions))
 	for i := range lambdaFunctions {
 		f := lambdaFunctions[i]
 		functionReports[i].Name = *f.FunctionName
@@ -170,20 +230,7 @@ func main() {
 		}
 	}
 	log.Info("Downloading log data complete", zap.Int("logEventCount", logEventCount), zap.Int("invocationCount", invocationCount))
-
-	log.Info("Creating output.json file", zap.Int("logEventCount", logEventCount), zap.Int("invocationCount", invocationCount))
-	f, err := os.Create("output.json")
-	if err != nil {
-		log.Fatal("could not create output file", zap.Error(err))
-	}
-	defer f.Close()
-	err = json.NewEncoder(f).Encode(functionReports)
-	if err != nil {
-		log.Fatal("could not export JSON", zap.Error(err))
-	}
-
-	//TODO: Print out a report.
-	log.Info("Complete", zap.Int("logEventCount", logEventCount), zap.Int("invocationCount", invocationCount))
+	return functionReports, nil
 }
 
 type FunctionReports struct {
@@ -204,10 +251,6 @@ Arm Price
 */
 
 const M = 1000000
-
-//fmt.Sprintf("%d", rc.AvgDuration()),
-//fmt.Sprintf("%d", rc.AvgMemoryUsed()),
-//fmt.Sprintf("%d", rc.MemoryAvailable()),
 
 func (fr FunctionReports) AvgDuration() (v time.Duration) {
 	if len(fr.Reports) == 0 {
