@@ -48,6 +48,12 @@ lambdacost -region=eu-west-1
 
 ## Tasks
 
+### build
+
+```sh
+go build
+```
+
 ### release
 
 Create production build with goreleaser.
