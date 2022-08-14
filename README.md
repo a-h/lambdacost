@@ -8,7 +8,7 @@ It creates a JSON file of the report information at `{accountid}-{region}.json`,
 
 The first time you run `lambdacost` for a specific account ID and region, the program will output information about the logs that are being downloaded, before finally outputting the report.
 
-| The program downloads the entire set of Lambda function logs from the time period in order to scan the data for durations. This costs real money, be careful where you run it. It's not my fault if you get a suprise bill!
+> The program downloads the entire set of Lambda function logs from the time period in order to scan the data for durations. This costs real money, be careful where you run it. It's not my fault if you get a suprise bill.
 
 ## Output
 
