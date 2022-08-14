@@ -13,7 +13,7 @@ The first time you run `lambdacost` for a specific account ID and region, the pr
 ## Output
 
 ```
-Name                    Arch   Daily    Monthly    Invocations Avg          RAM (Max)     RAM (Assigned) RAM (Optimal) Monthly Savings           
+Name                    Arch   Daily    Monthly    Invocations Avg          RAM           RAM            RAM           Monthly Savings           
                                                                Duration     Max           Assigned       Optimal       (arm64 + RAM)             
 xxxxxxxxxx              arm64  $3.83298 $114.98946 99297       951.792235ms 64 (2.07%)    3096           1024          $76.56                    
 xxxxxxxxxxxxxxxxxxxxxx  x86_64 $3.66138 $109.84139 57206       1.275565531s 184 (5.99%)   3072           1024          $80.30
