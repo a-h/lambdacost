@@ -59,23 +59,37 @@ func main() {
 			"Monthly",
 			"Invocations",
 			"Avg Duration",
-			"Mem Used",
-			"Mem Avail",
+			"RAM (Max)",
+			"RAM (Assigned)",
+			"RAM (Optimal)",
+			"Monthly Savings (arm64 + RAM)",
 		}, "\t"))
 		for _, rc := range reportContent {
 			var pcUsed float64
-			if rc.MemoryAvailable() > 0 {
-				pcUsed = (float64(rc.AvgMemoryUsed()) / float64(rc.MemoryAvailable())) * 100.0
+			if rc.MemoryAssigned() > 0 {
+				pcUsed = (float64(rc.MaxMemoryUsed()) / float64(rc.MemoryAssigned())) * 100.0
+			}
+			cost := rc.Cost()
+			optimisedRAM, optimisedCost := rc.OptimisedCost()
+			optimisedRAMDisplay := fmt.Sprintf("%d", optimisedRAM)
+			if optimisedRAM == 0 {
+				optimisedRAMDisplay = "N/A"
+			}
+			monthlySavings := (cost * 30) - (optimisedCost * 30)
+			if monthlySavings < 0 {
+				monthlySavings = 0.0
 			}
 			fmt.Fprintln(tw, strings.Join([]string{
 				rc.Name,
 				rc.Architecture,
-				fmt.Sprintf("$%.5f", rc.Cost()),
-				fmt.Sprintf("$%.5f", rc.Cost()*30),
+				fmt.Sprintf("$%.5f", cost),
+				fmt.Sprintf("$%.5f", cost*30),
 				fmt.Sprintf("%d", len(rc.Reports)),
 				fmt.Sprintf("%v", rc.AvgDuration()),
-				fmt.Sprintf("%d (%.2f%%)", rc.AvgMemoryUsed(), pcUsed),
-				fmt.Sprintf("%d", rc.MemoryAvailable()),
+				fmt.Sprintf("%d (%.2f%%)", rc.MaxMemoryUsed(), pcUsed),
+				fmt.Sprintf("%d", rc.MemoryAssigned()),
+				optimisedRAMDisplay,
+				fmt.Sprintf("$%.2f", monthlySavings),
 			}, "\t"))
 		}
 		tw.Flush()
@@ -219,27 +233,67 @@ func (fr FunctionReports) AvgMemoryUsed() (v int64) {
 	return v / count
 }
 
-func (fr FunctionReports) MemoryAvailable() int64 {
+func (fr FunctionReports) MaxMemoryUsed() (v int64) {
+	for _, r := range fr.Reports {
+		if v < r.MaxMemoryUsed {
+			v = r.MaxMemoryUsed
+		}
+	}
+	return
+}
+
+func (fr FunctionReports) MemoryAssigned() int64 {
 	if len(fr.Reports) == 0 {
 		return 0
 	}
 	return fr.Reports[0].MemorySize
 }
 
+// Minimum RAM assigned to a Lambda function.
+const minRAM = 1024
+
+func (fr FunctionReports) OptimisedCost() (memSize int64, cost float64) {
+	if len(fr.Reports) == 0 {
+		return
+	}
+	memSize = fr.Reports[0].MemorySize
+	// Don't bother optimising below the minimum amount of RAM.
+	if memSize > minRAM {
+		// Select double the RAM that's ever been required.
+		proposedMemSize := fr.MaxMemoryUsed() * 2
+		// Use at least the minimum amount of RAM.
+		if proposedMemSize < minRAM {
+			proposedMemSize = minRAM + 1
+		}
+		// Round down to nearest 256MB chunk.
+		proposedMemSize = (proposedMemSize / 256) * 256
+		// Only choose less RAM.
+		if proposedMemSize < memSize {
+			memSize = proposedMemSize
+		}
+	}
+	return memSize, fr.CostForArchitecture("arm64", memSize)
+}
+
 func (fr FunctionReports) Cost() (cost float64) {
+	return fr.CostForArchitecture(fr.Architecture, 0)
+}
+
+func (fr FunctionReports) CostForArchitecture(architecture string, memorySize int64) (cost float64) {
 	if len(fr.Reports) == 0 {
 		return 0.0
 	}
 	costPer1MRequests := 0.20
 	costForRequests := costPer1MRequests / M * float64(len(fr.Reports))
 	var msBilled time.Duration
-	var memorySize int64
 	for _, r := range fr.Reports {
 		msBilled += r.BilledDuration
-		memorySize = r.MemorySize
+		if memorySize == 0 {
+			memorySize = r.MemorySize
+		}
 	}
 	gbSecondPrice := 0.0000166667
-	if fr.Architecture == "arm64" {
+	if architecture == "arm64" {
 		gbSecondPrice = 0.0000133334
 	}
 	secs := msBilled.Seconds()
